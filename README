@@ -1,0 +1,14 @@
+Check the status of the UPS using NUT (Network UPS Tools).
+It can check if nut daemon runs, if the UPS is online or on battery, the charge of the battery, the temperature and the load of the UPS.
+
+Tested on Ubuntu 6.10 and 8.04 and Fedora Core2.
+
+Example to use this script:
+
+command[check_ups]=/usr/lib/nagios/plugins/check_nut apc@localhost -w 50 -c 10 -t 45 -T 50 -l 30 -L 50
+
+Check the UPS with Name "apc" attached on localhost.
+Warning if battery lower as 50%, or temperature greater as 45°, or UPS load greater as 30.
+Critical if battery lower as 10%, or temperature greater as 50°, or UPS load greater as 50.
+
+You can add the parameter -p (--perfdata) to get performance data, too (useful for pnp4nagios, NagiosGrapher)
