@@ -3,7 +3,7 @@
 
 use strict;
 use Getopt::Long;
-use vars qw($opt_V $opt_h $opt_d $PROGNAME $UPSC $ret $str $opt_d $opt_bw $opt_bc $opt_tw $opt_tc $opt_lw $opt_lc $opt_pd @lines $line $bCharge $uTemp $uLoad $uStatus $uModel $lWarn $lCrit $tWarn $tCrit);
+use vars qw($opt_V $opt_h $opt_d $PROGNAME $UPSC $ret $str $opt_d $opt_bw $opt_bc $opt_tw $opt_tc $opt_lw $opt_lc $opt_i $opt_pd @lines $line $bCharge $uTemp $uLoad $uStatus $uModel $uTest $uVolt $lWarn $lCrit $tWarn $tCrit $perf @statuses $longStr);
 use lib "/usr/lib/nagios/plugins" ;
 use utils qw(%ERRORS &print_revision &support &usage);
 
@@ -28,6 +28,7 @@ GetOptions
          "l=s"  => \$opt_lw, "loadWarning=s"  => \$opt_lw,
          "L=s"  => \$opt_lc, "loadCritical=s" => \$opt_lc,
          "p"    => \$opt_pd, "perfData"       => \$opt_pd,
+         "i"    => \$opt_i,  "ignoredaemonstate"   => \$opt_i,
 	 "h"    => \$opt_h,  "help"           => \$opt_h);
 
 if ($opt_V) {
@@ -85,8 +86,12 @@ else
   $lCrit = 0;
 }
 
-$str = `/bin/ps axuwf | /bin/grep "/upsd\$" | /bin/grep -v grep`;
-$ret = $?;
+$ret=0;
+unless($opt_i)
+{
+  $str = `/bin/ps axuwf | /bin/grep "/upsd\$" | /bin/grep -v grep`;
+  ret_inc($?);
+}
 
 if($ret == 0)
 {
@@ -100,75 +105,97 @@ if($ret == 0)
   foreach $line (@lines)
   {
     $line =~ s/[\n\r]//g;
-    $bCharge = substr($line, 16) if($line =~ /^battery\.charge\:/);
-    $uTemp   = substr($line, 17) if($line =~ /^ups\.temperature\:/);
-    $uLoad   = substr($line, 10) if($line =~ /^ups\.load\:/);
-    $uStatus = substr($line, 12) if($line =~ /^ups\.status\:/);
-    $uModel  = substr($line, 11) if($line =~ /^ups\.model\:/);
+    $bCharge = $1 if($line =~ /^battery\.charge\: *(.*)/);
+    $uTemp   = $1 if($line =~ /^ups\.temperature\: *(.*)/);
+    $uLoad   = $1 if($line =~ /^ups\.load\: *(.*)/);
+    $uStatus = $1 if($line =~ /^ups\.status\: *(.*)/);
+    $uModel  = $1 if($line =~ /^ups\.model\: *(.*)/);
+    $uTest   = $1 if($line =~ /^ups\.test\.result\: *(.*)/);
+
+    #Used only for perfdata
+    $uVolt   = $1 if($line =~ /^battery\.voltage\: *(.*)/);
   }
-  $ret = 0;
+  $perf = "";
+  if($opt_pd)
+  {
+    $perf .= " | Charge=$bCharge%;$bWarn;$bCrit Temp=$uTemp;$tWarn;$tCrit Load=$uLoad%;$lWarn;$lCrit";
+    $perf .= " Voltage=$uVolt" if defined($uVolt);
+    $perf .= "";
+  }
+  $longStr="\n";
   if($bCharge < $bWarn && $bCharge >= $bCrit && $bWarn ne '')
   {
-    $ret = 1;
-    print "Battery warning: $bCharge";
+    ret_inc(1);
+    $longStr.="Battery warning: $bCharge\n";
   }
   if($bCharge < $bCrit && $bCrit ne '')
   {
-    $ret = 2;
-    print "Battery critical: $bCharge";
+    ret_inc(2);
+    $longStr.="Battery critical: $bCharge\n";
   }
   if($uTemp > $tWarn && $uTemp <= $tCrit && $tWarn != 0)
   {
-    $ret = 1;
-    print "Temperature warning: $uTemp";
+    ret_inc(1);
+    $longStr.="Temperature warning: $uTemp\n";
   }
   if($uTemp > $tCrit && $tCrit != 0)
   {
-    $ret = 2;
-    print "Temperature critical: $uTemp";
+    ret_inc(2);
+    $longStr.="Temperature critical: $uTemp\n";
   }
   if($uLoad > $lWarn && $uLoad <= $lCrit && $lWarn != 0)
   {
-    $ret = 1;
-    print "UPS-Load warning: $uLoad";
+    ret_inc(1);
+    $longStr.="UPS-Load warning: $uLoad\n";
   }
   if($uLoad > $lCrit && $lCrit != 0)
   {
-    $ret = 2;
-    print "UPS-Load critical: $uLoad";
+    ret_inc(2);
+    $longStr.="UPS-Load critical: $uLoad\n";
   }
-  if($uStatus ne 'OL' && $uStatus ne 'OL RB')
-  {
-    $ret = 1;
-    print "UPS warning: status $uStatus";
-  }
-  if($ret == 0)
-  {
-    print "UPS $opt_d ($uModel) OK: battery charge: $bCharge, temperature: $uTemp, load: $uLoad";
-  }
-  if($opt_pd)
-  {
-# Display performance data (patch from viper)
-    print " | Charge=$bCharge;$bWarn;$bCrit Temp=$uTemp;$tWarn;$tCrit Load=$uLoad;$lWarn;$lCrit\n";
-  }
-  else
-  {
-    print "\n";
-  }
+  ret_inc(0), $longStr.="On line (mains is present)\n"
+    if($uStatus =~ m/(?:^| )OL(?:$| )/);
+  ret_inc(2), $longStr.="On Battery (mains is not present)\n"
+    if($uStatus =~ m/(?:^| )OB(?:$| )/);
+  ret_inc(1), $longStr.="Low Battery\n"
+    if($uStatus =~ m/(?:^| )LB(?:$| )/);
+  ret_inc(1), $longStr.="The battery needs to be replaced\n"
+    if($uStatus =~ m/(?:^| )RB(?:$| )/);
+  ret_inc(0), $longStr.="The battery is charging\n"
+    if($uStatus =~ m/(?:^| )CHRG(?:$| )/);
+  ret_inc(1), $longStr.="The battery is discharging (inverter is providing load power)\n"
+    if($uStatus =~ m/(?:^| )DISCHRG(?:$| )/);
+  ret_inc(1), $longStr.="UPS bypass circuit is active - no battery protection is available\n"
+    if($uStatus =~ m/(?:^| )BYPASS(?:$| )/);
+  ret_inc(0), $longStr.="UPS is currently performing runtime calibration (on battery)\n"
+    if($uStatus =~ m/(?:^| )CAL(?:$| )/);
+  ret_inc(1), $longStr.="UPS is offline and is not supplying power to the load\n"
+    if($uStatus =~ m/(?:^| )OFF(?:$| )/);
+  ret_inc(2), $longStr.="UPS is overloaded\n"
+    if($uStatus =~ m/(?:^| )OVER(?:$| )/);
+  ret_inc(1), $longStr.="UPS is trimming incoming voltage\n"
+    if($uStatus =~ m/(?:^| )TRIM(?:$| )/);
+  ret_inc(1), $longStr.="UPS is boosting incoming voltage\n"
+    if($uStatus =~ m/(?:^| )BOOST(?:$| )/);
+  ret_inc(3), $longStr.="Forced Shutdown\n"
+    if($uStatus =~ m/(?:^| )FSD(?:$| )/);
+  @statuses=("OK", "WARNING", "CRITICAL", "UNKNOWN");
+  print "UPS $opt_d ($uModel) $statuses[$ret]: battery charge: $bCharge, temperature: $uTemp, load: $uLoad$perf$longStr";
 }
 else
 {
   print "NUT Daemon DOWN\n";
-  $ret = 1;
+  ret_inc(3);
 }
 
+exit $ERRORS{'UNKNOWN'} if ($ret == 3);
 exit $ERRORS{'CRITICAL'} if ($ret == 2);
 exit $ERRORS{'WARNING'} if ($ret == 1);
 exit $ERRORS{'OK'};
 
 
 sub print_usage () {
-	print "Usage:\n$PROGNAME -d <device> -w <battery charge warning> -c <battery charge critical> -t <temperature warning> -T <temperature critical> -l <ups load warning> -L <ups load critical> [-p|--perfdata]\n\n";
+       print "Usage:\n$PROGNAME -d <device> -w <battery charge warning> -c <battery charge critical> -t <temperature warning> -T <temperature critical> -l <ups load warning> -L <ups load critical> [-i|--ignoredaemonstate] [-p|--perfdata]\n\n";
 }
 
 sub print_help () {
@@ -180,4 +207,10 @@ This plugin reports the status of the UPS using NUT
 ";
 	print_usage();
 	support();
+}
+
+sub ret_inc
+{
+  $ret=$_[0]
+    if($ret<$_[0]);
 }
